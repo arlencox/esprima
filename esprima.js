@@ -84,7 +84,8 @@ parseStatement: true, parseSourceElement: true */
         NumericLiteral: 6,
         Punctuator: 7,
         StringLiteral: 8,
-        RegularExpression: 9
+        RegularExpression: 9,
+        Annotation: 65536
     };
 
     TokenName = {};
@@ -97,6 +98,7 @@ parseStatement: true, parseSourceElement: true */
     TokenName[Token.Punctuator] = 'Punctuator';
     TokenName[Token.StringLiteral] = 'String';
     TokenName[Token.RegularExpression] = 'RegularExpression';
+    TokenName[Token.Annotation] = 'Annotation';
 
     // A function following one of those tokens is an expression.
     FnExprTokens = ['(', '{', '[', 'in', 'typeof', 'instanceof', 'new',
@@ -110,6 +112,7 @@ parseStatement: true, parseSourceElement: true */
                     '<=', '<', '>', '!=', '!=='];
 
     Syntax = {
+        Annotation: 'Annotation',
         AssignmentExpression: 'AssignmentExpression',
         ArrayExpression: 'ArrayExpression',
         BlockStatement: 'BlockStatement',
@@ -1006,6 +1009,73 @@ parseStatement: true, parseSourceElement: true */
         };
     }
 
+    // Extension Annotations
+
+    function scanAnnotation() {
+        var ch, start, annotation;
+
+        assert((source[index] === '@'),
+               'Annotation must start with @');
+        start = index;
+        ++index;
+        while (index < length) {
+            ch = source[index++];
+            if (isLineTerminator(ch)) {
+                annotation += ch;
+                ++lineNumber;
+                if (ch ===  '\r' && source[index] === '\n') {
+                    annotation += source[index];
+                    ++index;
+                }
+            } else if(ch === ';') {
+                break;
+            } else {
+                annotation += ch;
+            }
+        }
+
+        return {
+            type: Token.Annotation,
+            value: annotation,
+            lineNumber: lineNumber,
+            lineStart: lineStart,
+            range: [start, index]
+        };
+    }
+    // Extension Annotations
+
+    function scanAnnotation() {
+        var ch, start, annotation;
+
+        assert((source[index] === '@'),
+               'Annotation must start with @');
+        start = index;
+        ++index;
+        while (index < length) {
+            ch = source[index++];
+            if (isLineTerminator(ch)) {
+                annotation += ch;
+                ++lineNumber;
+                if (ch ===  '\r' && source[index] === '\n') {
+                    annotation += source[index];
+                    ++index;
+                }
+            } else if(ch === ';') {
+                break;
+            } else {
+                annotation += ch;
+            }
+        }
+
+        return {
+            type: Token.Annotation,
+            value: annotation,
+            lineNumber: lineNumber,
+            lineStart: lineStart,
+            range: [start, index]
+        };
+    }
+
     function scanRegExp() {
         var str, ch, start, pattern, flags, value, classMarker = false, restore, terminated = false;
 
@@ -1240,6 +1310,11 @@ parseStatement: true, parseSourceElement: true */
         // String literal starts with single quote (#39) or double quote (#34).
         if (ch === 39 || ch === 34) {
             return scanStringLiteral();
+        }
+
+        // Annotations start with @ (#64).
+        if (ch === 64) {
+            return scanAnnotation();
         }
 
         if (isIdentifierStart(ch)) {
@@ -1504,11 +1579,12 @@ parseStatement: true, parseSourceElement: true */
             };
         },
 
-        createFunctionDeclaration: function (id, params, defaults, body) {
+        createFunctionDeclaration: function (id, params, annotations, defaults, body) {
             return {
                 type: Syntax.FunctionDeclaration,
                 id: id,
                 params: params,
+                annotations: annotations,
                 defaults: defaults,
                 body: body,
                 rest: null,
@@ -1517,11 +1593,12 @@ parseStatement: true, parseSourceElement: true */
             };
         },
 
-        createFunctionExpression: function (id, params, defaults, body) {
+        createFunctionExpression: function (id, params, annotations, defaults, body) {
             return {
                 type: Syntax.FunctionExpression,
                 id: id,
                 params: params,
+                annotations: annotations,
                 defaults: defaults,
                 body: body,
                 rest: null,
@@ -1711,7 +1788,15 @@ parseStatement: true, parseSourceElement: true */
                 object: object,
                 body: body
             };
+        },
+
+        createAnnotation: function (token) {
+            return {
+                type: Syntax.Annotation,
+                value: source.slice(token.range[0], token.range[1])
+            };
         }
+
     };
 
     // Return true if there is a line terminator before the next token.
@@ -1837,6 +1922,13 @@ parseStatement: true, parseSourceElement: true */
     function matchKeyword(keyword) {
         return lookahead.type === Token.Keyword && lookahead.value === keyword;
     }
+
+    // Return true if the next token is an annotation
+
+    function matchAnnotation() {
+        return lookahead.type === Token.Annotation;
+    }
+
 
     // Return true if the next token is an assignment operator
 
@@ -3260,7 +3352,7 @@ parseStatement: true, parseSourceElement: true */
     }
 
     function parseParams(firstRestricted) {
-        var param, params = [], token, stricted, paramSet, key, message;
+        var param, params = [], token, stricted, paramSet, key, message, annotations = [], annotation;
         expect('(');
 
         if (!match(')')) {
@@ -3301,8 +3393,17 @@ parseStatement: true, parseSourceElement: true */
 
         expect(')');
 
+        while (matchAnnotation()) {
+            skipComment();
+            delegate.markStart();
+            token = lex();
+            annotation = delegate.createAnnotation(token);
+            annotations.push(delegate.markEnd(annotation));
+        }
+
         return {
             params: params,
+            annotations: annotations,
             stricted: stricted,
             firstRestricted: firstRestricted,
             message: message
@@ -3310,7 +3411,7 @@ parseStatement: true, parseSourceElement: true */
     }
 
     function parseFunctionDeclaration() {
-        var id, params = [], body, token, stricted, tmp, firstRestricted, message, previousStrict;
+        var id, params = [], body, token, stricted, tmp, firstRestricted, message, previousStrict, annotations;
 
         skipComment();
         delegate.markStart();
@@ -3334,6 +3435,7 @@ parseStatement: true, parseSourceElement: true */
 
         tmp = parseParams(firstRestricted);
         params = tmp.params;
+        annotations = tmp.annotations;
         stricted = tmp.stricted;
         firstRestricted = tmp.firstRestricted;
         if (tmp.message) {
@@ -3350,11 +3452,11 @@ parseStatement: true, parseSourceElement: true */
         }
         strict = previousStrict;
 
-        return delegate.markEnd(delegate.createFunctionDeclaration(id, params, [], body));
+        return delegate.markEnd(delegate.createFunctionDeclaration(id, params, annotations, [], body));
     }
 
     function parseFunctionExpression() {
-        var token, id = null, stricted, firstRestricted, message, tmp, params = [], body, previousStrict;
+        var token, id = null, stricted, firstRestricted, message, tmp, params = [], body, previousStrict, annotations;
 
         delegate.markStart();
         expectKeyword('function');
@@ -3379,6 +3481,7 @@ parseStatement: true, parseSourceElement: true */
 
         tmp = parseParams(firstRestricted);
         params = tmp.params;
+        annotations = tmp.annotations;
         stricted = tmp.stricted;
         firstRestricted = tmp.firstRestricted;
         if (tmp.message) {
@@ -3395,7 +3498,7 @@ parseStatement: true, parseSourceElement: true */
         }
         strict = previousStrict;
 
-        return delegate.markEnd(delegate.createFunctionExpression(id, params, [], body));
+        return delegate.markEnd(delegate.createFunctionExpression(id, params, annotations, [], body));
     }
 
     // 14 Program
